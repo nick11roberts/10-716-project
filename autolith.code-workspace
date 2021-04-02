@@ -1,0 +1,10 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"python.pythonPath": "/home/nroberts/anaconda3/envs/autolith/bin/python"
+	}
+}
