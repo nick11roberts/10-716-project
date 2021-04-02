@@ -94,7 +94,6 @@ class BetaLasso(Optimizer):
 
                 # Proximal operator
                 param.mul_(torch.abs(param) >= (beta * reg))
-                # TODO subgradient L1 term and thresholding 
 
             # update momentum_buffers in state
             for p, momentum_buffer in zip(

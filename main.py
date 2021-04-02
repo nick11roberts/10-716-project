@@ -16,6 +16,10 @@ from models import S_FC as Net
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def count_nonzero_parameters(model):
+    return sum(
+        torch.count_nonzero(p) for p in model.parameters() if p.requires_grad)
+
 def train(args, model, device, train_loader, optimizer, epoch, writer):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -50,14 +54,18 @@ def test(model, device, test_loader, epoch, writer):
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     test_loss /= len(test_loader.dataset)
-    acc = 100. * correct / len(test_loader.dataset)
+    acc = correct / len(test_loader.dataset)
 
     writer.add_scalar('Loss/test', test_loss, epoch-1)
     writer.add_scalar('Accuracy/test', acc, epoch-1)
+    writer.add_scalar('Parameters/nnz', 
+        count_nonzero_parameters(model), epoch-1)
+    writer.add_scalar('Parameters/sparsity', 
+        count_nonzero_parameters(model) / count_parameters(model), epoch-1)
 
     print(
         '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-            test_loss, correct, len(test_loader.dataset), acc))
+            test_loss, correct, len(test_loader.dataset), 100. * acc))
 
 
 def main():
@@ -102,17 +110,20 @@ def main():
         train_kwargs.update(cuda_kwargs)
         test_kwargs.update(cuda_kwargs)
 
-    augs = []
-    augs.append(Augmentation(autoaug_paper_cifar10()))
-    transform = transforms.Compose(augs + [
+    augs = [
+        Augmentation(autoaug_paper_cifar10())
+        ]
+    normalizer = [
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
-        ])
+        ]
+    transform = transforms.Compose(augs + normalizer)
+    test_transform = transforms.Compose(normalizer)
     dataset1 = datasets.CIFAR10('../data', train=True, download=True,
                        transform=transform)
     dataset2 = datasets.CIFAR10('../data', train=False,
-                       transform=transform)
+                       transform=test_transform)
     train_loader = torch.utils.data.DataLoader(dataset1,**train_kwargs)
     test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
