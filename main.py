@@ -9,24 +9,37 @@ from betalasso import L1, Lasso, BetaLasso
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from warmup_scheduler import GradualWarmupScheduler
 from torch.utils.tensorboard import SummaryWriter
 from auto_augment import AutoAugment, Cutout
+from theconf import Config as C
 from archive import autoaug_paper_cifar10
-from FastAutoAugment.data import Augmentation
+from FastAutoAugment.data import Augmentation, get_dataloaders
 from models import S_FC as Net
 
 use_amp = True
 scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_parameters(model, layer=''):
+    if layer == '':
+        l = model.parameters()
+    else:
+        l = [param for name, param in model.named_parameters() 
+            if layer in name]
+    return sum(p.numel() for p in l if p.requires_grad)
 
-def count_nonzero_parameters(model):
+def count_nonzero_parameters(model, layer=''):
+    if layer == '':
+        l = model.parameters()
+    else:
+        l = [param for name, param in model.named_parameters() 
+            if layer in name]
     return sum(
-        torch.count_nonzero(p) for p in model.parameters() if p.requires_grad)
+        torch.count_nonzero(p) for p in l if p.requires_grad)
 
 def get_images(w, n=1):
     select = torch.randint(0, w.shape[0], size=(n,))
+    #select = torch.arange(n)
     w_im = w[select].unflatten(1, (3, 32, 32))
     return w_im
 
@@ -44,13 +57,9 @@ def train(args, model, device, train_loader, optimizer, scheduler,
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()
+        scheduler.step(epoch - 1 + float(batch_idx + 1) / len(train_loader))
 
         cur_step = (len(train_loader) * (epoch-1)) + batch_idx
-        w = model.fc1.weight.data
-        images = get_images(w, 32)
-        grid = make_grid(images)
-        writer.add_image('images', grid, 0)
         writer.add_scalar('Loss/train', loss.item(), cur_step)
         writer.add_scalar('Metadata/learning_rate', 
             scheduler.get_last_lr()[0], cur_step)
@@ -63,7 +72,7 @@ def train(args, model, device, train_loader, optimizer, scheduler,
                 break
 
 
-def test(model, device, test_loader, epoch, writer):
+def test(model, device, test_loader, epoch, writer, split='test'):
     model.eval()
     test_loss = 0
     correct = 0
@@ -78,20 +87,38 @@ def test(model, device, test_loader, epoch, writer):
                 keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    test_loss /= len(test_loader.dataset)
-    acc = correct / len(test_loader.dataset)
+    n = len(test_loader.sampler)
+    test_loss /= n
+    acc = correct / n
 
-    writer.add_scalar('Loss/test', test_loss, epoch-1)
-    writer.add_scalar('Accuracy/test', acc, epoch-1)
+    w = model.layer1.weight.data
+    images = get_images(w, 32)
+    grid = make_grid(images)
+    writer.add_image('images', grid, epoch-1)
+    writer.add_scalar(f'Loss/{split}', test_loss, epoch-1)
+    writer.add_scalar(f'Accuracy/{split}', acc, epoch-1)
     writer.add_scalar('Parameters/nnz', 
         count_nonzero_parameters(model), epoch-1)
     writer.add_scalar('Parameters/sparsity', 
         count_nonzero_parameters(model) / count_parameters(model), epoch-1)
+    writer.add_scalar('Parameters/nnz_first_layer', 
+        count_nonzero_parameters(model, layer='layer1'), epoch-1)
+    writer.add_scalar('Parameters/sparsity_first_layer', 
+        count_nonzero_parameters(model, layer='layer1') / count_parameters(
+            model, layer='layer1'), epoch-1)
+    writer.add_scalar('Parameters/nnz_second_layer', 
+        count_nonzero_parameters(model, layer='fc2'), epoch-1)
+    writer.add_scalar('Parameters/sparsity_second_layer', 
+        count_nonzero_parameters(model, layer='fc2') / count_parameters(
+            model, layer='fc2'), epoch-1)
+    writer.add_scalar('Parameters/nnz_last_layer', 
+        count_nonzero_parameters(model, layer='fc3'), epoch-1)
+    writer.add_scalar('Parameters/sparsity_last_layer', 
+        count_nonzero_parameters(model, layer='fc3') / count_parameters(
+            model, layer='fc3'), epoch-1)
 
-    print(
-        '\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-            test_loss, correct, len(test_loader.dataset), 100. * acc))
-
+    print('{} set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+            split, test_loss, correct, n, 100. * acc))
 
 def main():
     # Training settings
@@ -106,8 +133,6 @@ def main():
                         help='number of epochs to train (default: 400)')
     parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
                         help='learning rate (default: 0.1)')
-    parser.add_argument('--gamma', type=float, default=0.7, metavar='M',
-                        help='Learning rate step gamma (default: 0.7)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--dry-run', action='store_true', default=False,
@@ -118,13 +143,29 @@ def main():
                         help='interval between log events')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
+    # Hyperparameters
+    parser.add_argument('--reg1', type=float, default=1e-05, 
+                        metavar='REG1', # TODO set to best hp
+                        help='first layer lambda (default: 1e-05)')
+    parser.add_argument('--reg', type=float, default=1e-06, 
+                        metavar='REG', # TODO set to best hp
+                        help='lambda (default: 1e-06)')
+    parser.add_argument('--beta', type=float, default=50, 
+                        metavar='BETA',
+                        help='beta (default: 50)')
+    parser.add_argument('--dropout', action='store_true', default=False,
+                        help='Use dropout on the last two layers') 
+                        # TODO set to best hp
+    # TODO parameterize SGD hps etc
+    # TODO parameterize which model to use etc
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
-    writer = SummaryWriter()
+    writer = SummaryWriter(
+        comment=f'__reg1{args.reg1}_reg{args.reg}_dropout{args.dropout}__')
 
     train_kwargs = {'batch_size': args.batch_size}
     test_kwargs = {'batch_size': args.test_batch_size}
@@ -135,37 +176,43 @@ def main():
         train_kwargs.update(cuda_kwargs)
         test_kwargs.update(cuda_kwargs)
 
-    augs = [
-        Augmentation(autoaug_paper_cifar10())
-        ]
-    normalizer = [
-        transforms.ToTensor(), # TODO need this?
-        #transforms.Normalize(mean=[0.485, 0.456, 0.406],
-        #                     std=[0.229, 0.224, 0.225])
-        ]
-    transform = transforms.Compose(augs + normalizer)
-    test_transform = transforms.Compose(normalizer)
-    dataset1 = datasets.CIFAR10('../data', train=True, download=True,
-                       transform=transform)
-    dataset2 = datasets.CIFAR10('../data', train=False,
-                       transform=test_transform)
-    train_loader = torch.utils.data.DataLoader(dataset1,**train_kwargs)
-    test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
+    train_sampler, train_loader, valid_loader, test_loader = get_dataloaders(
+        'cifar10', args.batch_size, '../data')
 
-    model = Net().to(device)
+    model = Net(dropout=args.dropout).to(device)
     print('Num params:', count_parameters(model))
 
     # TODO parameterize this
+    first_layer = [param for name, param in model.named_parameters()
+                        if 'layer1' in name]
+    other_layers = [param for name, param in model.named_parameters()
+                        if 'layer1' not in name]
     #optimizer = optim.SGD(model.parameters(), lr=args.lr)
-    optimizer = BetaLasso(model.parameters(), lr=args.lr, reg=1e-06, beta=50)
+    optimizer = BetaLasso([
+            {'params': first_layer, 
+                'lr': args.lr, 'reg': args.reg1, 'beta': args.beta},
+            {'params': other_layers, 
+                'lr': args.lr, 'reg': args.reg, 'beta': args.beta},])
 
-    scheduler = CosineAnnealingLR(optimizer, 
-        T_max=args.epochs*len(train_loader))
+    #scheduler = CosineAnnealingLR(optimizer, 
+    #    T_max=args.epochs*len(train_loader))
+    # TODO trying cosine scheduler settings from fast autoaugment
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=C.get()['epoch'], eta_min=0.)
+    if False and C.get()['lr_schedule'].get(
+        'warmup', None) and C.get()['lr_schedule']['warmup']['epoch'] > 0:
+        scheduler = GradualWarmupScheduler(
+            optimizer,
+            multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
+            total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
+            after_scheduler=scheduler
+        )
 
     for epoch in range(1, args.epochs + 1):
-        train(args, model, device, train_loader, optimizer, scheduler, epoch, 
-            writer)
-        test(model, device, test_loader, epoch, writer)
+        train(args, model, device, train_loader, 
+            optimizer, scheduler, epoch, writer)
+        test(model, device, valid_loader, epoch, writer, split='valid')
+        test(model, device, test_loader, epoch, writer, split='test')
         writer.flush()
 
     if args.save_model:
@@ -174,4 +221,5 @@ def main():
 
 
 if __name__ == '__main__':
+    _ = C('s_fc_cifar10.yaml')
     main()

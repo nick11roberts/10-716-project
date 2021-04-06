@@ -1,0 +1,14 @@
+model:
+  type: s_fc
+dataset: cifar10
+aug: fa_reduced_cifar10
+cutout: 16
+batch: 512
+epoch: 400
+lr: 0.1
+lr_schedule:
+  type: 'cosine'
+  warmup:
+    multiplier: 1
+    epoch: 5
+    

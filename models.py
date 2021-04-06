@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class S_CONV(nn.Module):
+class S_CONV(nn.Module): # TODO this has the wrong number of params (padding?)
     def __init__(self, alpha=200):
         super(S_CONV, self).__init__()
         in_size = 32 * 32 * 3
@@ -16,22 +16,20 @@ class S_CONV(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
-        
         x = torch.flatten(x, 1)
         x = self.fc2(x)
         x = self.bn2(x)
         x = F.relu(x)
-
         x = self.fc3(x)
         output = F.log_softmax(x, dim=1)
         return output
 
-
 class S_FC(nn.Module):
-    def __init__(self, alpha=150):
+    def __init__(self, alpha=150, dropout=False):
         super(S_FC, self).__init__()
-        in_size = 32 * 32 * 3
-        self.fc1 = nn.Linear(in_size, 256 * alpha)
+        self.in_size = 32 * 32 * 3
+        self.use_dropout = dropout
+        self.layer1 = nn.Linear(self.in_size, 256 * alpha)
         self.bn1 = nn.BatchNorm1d(256 * alpha)
         self.fc2 = nn.Linear(256 * alpha, 24 * alpha)
         self.bn2 = nn.BatchNorm1d(24 * alpha)
@@ -41,16 +39,16 @@ class S_FC(nn.Module):
 
     def forward(self, x):
         x = torch.flatten(x, 1)
-        x = self.fc1(x)
+        x = self.layer1(x)
         x = self.bn1(x)
         x = F.relu(x)
-
-        #x = self.dropout1(x) # If dropout hp turned on
+        if self.use_dropout:
+            x = self.dropout1(x) # If dropout hp turned on
         x = self.fc2(x)
         x = self.bn2(x)
         x = F.relu(x)
-
-        #x = self.dropout2(x) # If dropout hp turned on
+        if self.use_dropout:
+            x = self.dropout2(x) # If dropout hp turned on
         x = self.fc3(x)
         output = F.log_softmax(x, dim=1)
         return output
