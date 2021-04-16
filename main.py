@@ -144,17 +144,19 @@ def main():
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
     # Hyperparameters
-    parser.add_argument('--reg1', type=float, default=1e-05, 
+    parser.add_argument('--reg1', type=float, default=2e-5, 
                         metavar='REG1', # TODO set to best hp
-                        help='first layer lambda (default: 1e-05)')
-    parser.add_argument('--reg', type=float, default=1e-06, 
+                        help='first layer lambda (default: 2e-05)')
+    parser.add_argument('--reg', type=float, default=5e-6, 
                         metavar='REG', # TODO set to best hp
-                        help='lambda (default: 1e-06)')
+                        help='lambda (default: 5e-6)')
     parser.add_argument('--beta', type=float, default=50, 
                         metavar='BETA',
                         help='beta (default: 50)')
     parser.add_argument('--dropout', action='store_true', default=False,
                         help='Use dropout on the last two layers') 
+    parser.add_argument('--full-train', action='store_true', default=False,
+                        help='Train using the full training set') 
                         # TODO set to best hp
     # TODO parameterize SGD hps etc
     # TODO parameterize which model to use etc
@@ -177,10 +179,14 @@ def main():
         test_kwargs.update(cuda_kwargs)
 
     train_sampler, train_loader, valid_loader, test_loader = get_dataloaders(
-        'cifar10', args.batch_size, '../data')
+        'cifar10', args.batch_size, '../data', 
+        split=0.0 if args.full_train else 0.15)
 
     model = Net(dropout=args.dropout).to(device)
     print('Num params:', count_parameters(model))
+    print(count_parameters(model, layer='layer1'))
+    print(count_parameters(model, layer='fc2'))
+    print(count_parameters(model, layer='fc3'))
 
     # TODO parameterize this
     first_layer = [param for name, param in model.named_parameters()
@@ -198,7 +204,7 @@ def main():
     #    T_max=args.epochs*len(train_loader))
     # TODO trying cosine scheduler settings from fast autoaugment
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=C.get()['epoch'], eta_min=0.)
+        optimizer, T_max=args.epochs, eta_min=0.)
     if False and C.get()['lr_schedule'].get(
         'warmup', None) and C.get()['lr_schedule']['warmup']['epoch'] > 0:
         scheduler = GradualWarmupScheduler(
@@ -211,13 +217,15 @@ def main():
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, 
             optimizer, scheduler, epoch, writer)
-        test(model, device, valid_loader, epoch, writer, split='valid')
+        if not args.full_train:
+            test(model, device, valid_loader, epoch, writer, split='valid')
         test(model, device, test_loader, epoch, writer, split='test')
         writer.flush()
 
     if args.save_model:
-        # TODO give model a better name
-        torch.save(model.state_dict(), "cifar10_net.pt")
+        # TODO give model a better name?
+        torch.save(model.state_dict(), 
+        f'models/__reg1{args.reg1}_reg{args.reg}_dropout{args.dropout}__.pt')
 
 
 if __name__ == '__main__':

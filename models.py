@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class S_CONV(nn.Module): # TODO this has the wrong number of params (padding?)
-    def __init__(self, alpha=200):
+class S_CONV(nn.Module):
+    def __init__(self, alpha=150, dropout=False):
         super(S_CONV, self).__init__()
         in_size = 32 * 32 * 3
-        self.conv1 = nn.Conv2d(3, alpha, 9, stride=2)
+        self.layer1 = nn.Conv2d(3, alpha, 9, stride=2)
         self.bn1 = nn.BatchNorm2d(alpha)
-        self.fc2 = nn.Linear(144 * alpha, 24 * alpha)
+        self.fc2 = nn.Linear(256 * alpha, 24 * alpha)
         self.bn2 = nn.BatchNorm1d(24 * alpha)
         self.fc3 = nn.Linear(24 * alpha, 10)
 

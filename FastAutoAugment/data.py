@@ -211,17 +211,16 @@ def get_dataloaders(dataset, batch, dataroot, split=0.15, split_idx=0, multinode
             train_sampler = torch.utils.data.distributed.DistributedSampler(total_trainset, num_replicas=dist.get_world_size(), rank=dist.get_rank())
             logger.info(f'----- dataset with DistributedSampler  {dist.get_rank()}/{dist.get_world_size()}')
 
+    worker_init_fn=lambda id: np.random.seed(torch.initial_seed()//2**32+id)
     trainloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=True if train_sampler is None else False, num_workers=8, pin_memory=True,
-        sampler=train_sampler, drop_last=True)
+        sampler=train_sampler, drop_last=True, worker_init_fn=worker_init_fn)
     validloader = torch.utils.data.DataLoader(
         total_trainset, batch_size=batch, shuffle=False, num_workers=4, pin_memory=True,
-        sampler=valid_sampler, drop_last=False)
-
+        sampler=valid_sampler, drop_last=False, worker_init_fn=worker_init_fn)
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=batch, shuffle=False, num_workers=8, pin_memory=True,
-        drop_last=False
-    )
+        drop_last=False, worker_init_fn=worker_init_fn)
     return train_sampler, trainloader, validloader, testloader
 
 
