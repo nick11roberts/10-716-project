@@ -153,12 +153,20 @@ def main():
     parser.add_argument('--beta', type=float, default=50, 
                         metavar='BETA',
                         help='beta (default: 50)')
+    parser.add_argument('--soft-threshold-iters', type=int, default=1, 
+                        help='soft_threshold_iters (default: 1)')
     parser.add_argument('--dropout', action='store_true', default=False,
-                        help='Use dropout on the last two layers') 
+                        help='Use dropout on the last two layers')
     parser.add_argument('--full-train', action='store_true', default=False,
                         help='Train using the full training set') 
                         # TODO set to best hp
-    # TODO parameterize SGD hps etc
+    # SGD hps etc
+    parser.add_argument('--use-sgd', action='store_true', default=False,
+                        help='Use SGD')
+    parser.add_argument('--momentum', type=float, default=0.0, 
+                        help='SGD momentum')
+    parser.add_argument('--weight-decay', type=float, default=0.0, 
+                        help='SGD weight decay')
     # TODO parameterize which model to use etc
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
@@ -166,8 +174,13 @@ def main():
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
-    writer = SummaryWriter(
-        comment=f'__reg1{args.reg1}_reg{args.reg}_dropout{args.dropout}__')
+    
+    if args.use_sgd:
+        iden = f'__SGD__momentum{args.momentum}__wd{args.weight_decay}_dropout{args.dropout}__'
+    else:
+        iden = f'__reg1{args.reg1}_reg{args.reg}_dropout{args.dropout}__sti{args.soft_threshold_iters}__'
+    
+    writer = SummaryWriter(comment=iden)
 
     train_kwargs = {'batch_size': args.batch_size}
     test_kwargs = {'batch_size': args.test_batch_size}
@@ -188,31 +201,26 @@ def main():
     print(count_parameters(model, layer='fc2'))
     print(count_parameters(model, layer='fc3'))
 
-    # TODO parameterize this
-    first_layer = [param for name, param in model.named_parameters()
-                        if 'layer1' in name]
-    other_layers = [param for name, param in model.named_parameters()
+    if args.use_sgd:
+        optimizer = optim.SGD(
+            model.parameters(), 
+            lr=args.lr, 
+            momentum=args.momentum, 
+            weight_decay=args.weight_decay)
+    else:
+        first_layer = [param for name, param in model.named_parameters()
+                       if 'layer1' in name]
+        other_layers = [param for name, param in model.named_parameters()
                         if 'layer1' not in name]
-    #optimizer = optim.SGD(model.parameters(), lr=args.lr)
-    optimizer = BetaLasso([
-            {'params': first_layer, 
-                'lr': args.lr, 'reg': args.reg1, 'beta': args.beta},
-            {'params': other_layers, 
-                'lr': args.lr, 'reg': args.reg, 'beta': args.beta},])
+        optimizer = BetaLasso([
+                {'params': first_layer, 
+                    'lr': args.lr, 'reg': args.reg1, 'beta': args.beta,},
+                {'params': other_layers, 
+                    'lr': args.lr, 'reg': args.reg, 'beta': args.beta,},],
+                soft_threshold_iters=args.soft_threshold_iters)
 
-    #scheduler = CosineAnnealingLR(optimizer, 
-    #    T_max=args.epochs*len(train_loader))
-    # TODO trying cosine scheduler settings from fast autoaugment
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=0.)
-    if False and C.get()['lr_schedule'].get(
-        'warmup', None) and C.get()['lr_schedule']['warmup']['epoch'] > 0:
-        scheduler = GradualWarmupScheduler(
-            optimizer,
-            multiplier=C.get()['lr_schedule']['warmup']['multiplier'],
-            total_epoch=C.get()['lr_schedule']['warmup']['epoch'],
-            after_scheduler=scheduler
-        )
 
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, 
@@ -224,8 +232,7 @@ def main():
 
     if args.save_model:
         # TODO give model a better name?
-        torch.save(model.state_dict(), 
-        f'models/__reg1{args.reg1}_reg{args.reg}_dropout{args.dropout}__.pt')
+        torch.save(model.state_dict(), f'models/' + iden + '.pt')
 
 
 if __name__ == '__main__':

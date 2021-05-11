@@ -13,7 +13,13 @@ def Lasso(params, lr=required, reg=required, beta=required,
 
 class BetaLasso(Optimizer):
     def __init__(self, params, lr=required, reg=required, beta=required,
-                 momentum=0, dampening=0, weight_decay=0, nesterov=False):
+                 momentum=0, dampening=0, weight_decay=0, nesterov=False,
+                 soft_threshold_iters=1, hard_threshold_iters=-1):
+
+        self.soft_threshold_iters = soft_threshold_iters
+        self.hard_threshold_iters = hard_threshold_iters
+        self.iters = 0
+
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:
@@ -93,7 +99,8 @@ class BetaLasso(Optimizer):
                 param.add_(d_p, alpha=-lr)
 
                 # Proximal operator
-                param.mul_(torch.abs(param) >= (beta * reg))
+                if self.iters % self.soft_threshold_iters == 0:
+                    param.mul_(torch.abs(param) >= (beta * reg))
 
             # update momentum_buffers in state
             #for p, momentum_buffer in zip(
@@ -101,5 +108,6 @@ class BetaLasso(Optimizer):
             #    state = self.state[p]
             #    state['momentum_buffer'] = momentum_buffer
 
+        self.iters += 1
         return loss
         
